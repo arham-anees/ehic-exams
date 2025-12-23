@@ -1,0 +1,178 @@
+﻿using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using EhicBackend.Entities;
+using EhicBackend.DTOs;
+
+namespace EhicBackend.Services
+{
+    public interface IAuthService
+    {
+        Task<AuthResponse?> LoginAsync(LoginRequest loginRequest);
+        Task<AuthResponse?> RegisterAsync(RegisterRequest registerRequest);
+        Task<User?> GetUserByEmailAsync(string email);
+        Task<User?> GetUserByUsernameAsync(string username);
+    }
+
+    public class AuthService : IAuthService
+    {
+        private readonly IConfiguration _configuration;
+        private readonly List<User> _users; // Temporary in-memory storage
+        private readonly List<Role> _roles; // Temporary in-memory storage
+        private int _nextUserId = 1;
+
+        public AuthService(IConfiguration configuration)
+        {
+            _configuration = configuration;
+            
+            // Initialize default roles
+            _roles = new List<Role>
+            {
+                new Role { Id = 1, Name = "User", Description = "Standard User", IsActive = true },
+                new Role { Id = 2, Name = "Admin", Description = "Administrator", IsActive = true }
+            };
+
+            // Initialize with a default admin user
+            _users = new List<User>
+            {
+                new User
+                {
+                    Id = _nextUserId++,
+                    Username = "admin",
+                    Email = "admin@ehic.com",
+                    PasswordHash = PasswordHasher.HashPassword("admin123"),
+                    FirstName = "Admin",
+                    LastName = "User",
+                    Role = _roles.First(r => r.Name == "Admin"),
+                    IsActive = true
+                }
+            };
+        }
+
+        public async Task<AuthResponse?> LoginAsync(LoginRequest loginRequest)
+        {
+            var user = await GetUserByEmailAsync(loginRequest.Email);
+            
+            if (user == null || !user.IsActive)
+            {
+                return null;
+            }
+
+            if (!PasswordHasher.VerifyPassword(loginRequest.Password, user.PasswordHash))
+            {
+                return null;
+            }
+
+            var token = GenerateJwtToken(user);
+            var expiresAt = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes());
+
+            return new AuthResponse
+            {
+                Token = token,
+                Expires = expiresAt,
+                User = new UserDto
+                {
+                    Username = user.Username,
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    RoleId = user.Role.Id,
+                    Role = user.Role.Name
+                }
+            };
+        }
+
+        public async Task<AuthResponse?> RegisterAsync(RegisterRequest registerRequest)
+        {
+            // Check if user already exists
+            if (await GetUserByEmailAsync(registerRequest.Email) != null)
+            {
+                return null; // User already exists
+            }
+
+            if (await GetUserByUsernameAsync(registerRequest.Username) != null)
+            {
+                return null; // Username already exists
+            }
+
+            var role = _roles.FirstOrDefault(r => r.Id == registerRequest.RoleId) ?? _roles.First(r => r.Name == "User");
+            
+            var user = new User
+            {
+                Id = _nextUserId++,
+                Username = registerRequest.Username,
+                Email = registerRequest.Email,
+                PasswordHash = PasswordHasher.HashPassword(registerRequest.Password),
+                FirstName = registerRequest.FirstName,
+                LastName = registerRequest.LastName,
+                Role = role,
+                IsActive = true
+            };
+
+            _users.Add(user);
+
+            var token = GenerateJwtToken(user);
+            var expiresAt = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes());
+
+            return new AuthResponse
+            {
+                Token = token,
+                Expires = expiresAt,
+                User = new UserDto
+                {
+                    Username = user.Username,
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    RoleId = user.Role.Id,
+                    Role = user.Role.Name
+                }
+            };
+        }
+
+        public Task<User?> GetUserByEmailAsync(string email)
+        {
+            var user = _users.FirstOrDefault(u => u.Email.Equals(email, StringComparison.OrdinalIgnoreCase) && u.IsActive);
+            return Task.FromResult(user);
+        }
+
+        public Task<User?> GetUserByUsernameAsync(string username)
+        {
+            var user = _users.FirstOrDefault(u => u.Username.Equals(username, StringComparison.OrdinalIgnoreCase) && u.IsActive);
+            return Task.FromResult(user);
+        }
+
+        private string GenerateJwtToken(User user)
+        {
+            var secret = _configuration["JWT:Secret"] ?? throw new InvalidOperationException("JWT Secret not configured");
+            var key = Encoding.ASCII.GetBytes(secret);
+            
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(new[]
+                {
+                    new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                    new Claim(ClaimTypes.Name, user.Username),
+                    new Claim(ClaimTypes.Email, user.Email),
+                    new Claim(ClaimTypes.Role, user.Role.Name),
+                    new Claim("FirstName", user.FirstName),
+                    new Claim("LastName", user.LastName)
+                }),
+                Expires = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes()),
+                Issuer = _configuration["JWT:Issuer"],
+                Audience = _configuration["JWT:Audience"],
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            };
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
+        }
+
+        private int GetJwtExpiryMinutes()
+        {
+            return int.TryParse(_configuration["JWT:ExpiryInMinutes"], out int minutes) ? minutes : 60;
+        }
+    }
+}

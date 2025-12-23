@@ -1,0 +1,23 @@
+﻿namespace EhicBackend.Services
+{
+    public interface IAuthService
+    {
+     
+        
+    }
+
+
+    public class AuthService : IAuthService
+    {
+        // Implement authentication-related methods here
+        public string Login(string username, string password)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Register(string username, string password)
+        {
+            throw new NotImplementedException();
+        }
+    }
+}

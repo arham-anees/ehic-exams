@@ -1,0 +1,18 @@
+﻿{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost;Database=EhicExamsDb;Integrated Security=true;TrustServerCertificate=true"
+  },
+  "JWT": {
+    "Secret": "MyVerySecretKeyForJWTTokenSigningPurposesThatIsLongEnough123456",
+    "Issuer": "EhicBackend",
+    "Audience": "EhicUsers",
+    "ExpiryInMinutes": 60
+  }
+}

@@ -1,0 +1,70 @@
+﻿using Microsoft.EntityFrameworkCore;
+using EhicBackend.Entities;
+
+namespace EhicBackend.Data
+{
+    public class ApplicationDbContext : DbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options)
+        {
+        }
+
+        public DbSet<User> Users { get; set; }
+        public DbSet<Role> Roles { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            // Configure User entity
+            modelBuilder.Entity<User>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Username).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Email).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.PasswordHash).IsRequired();
+                entity.Property(e => e.FirstName).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.LastName).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Create unique indexes
+                entity.HasIndex(e => e.Username).IsUnique();
+                entity.HasIndex(e => e.Email).IsUnique();
+
+                // Configure relationship with Role
+                entity.HasOne(e => e.Role)
+                      .WithMany()
+                      .HasForeignKey("RoleId")
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Configure Role entity
+            modelBuilder.Entity<Role>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Description).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Create unique index for role name
+                entity.HasIndex(e => e.Name).IsUnique();
+            });
+
+            // Seed initial data
+            SeedData(modelBuilder);
+        }
+
+        private void SeedData(ModelBuilder modelBuilder)
+        {
+            // Seed roles
+            modelBuilder.Entity<Role>().HasData(
+                new Role { Id = 1, Name = "User", Description = "Standard User", IsActive = true },
+                new Role { Id = 2, Name = "Admin", Description = "Administrator", IsActive = true },
+                new Role { Id = 3, Name = "Examiner", Description = "Exam Administrator", IsActive = true }
+            );
+
+            // Note: User seeding will be handled in the AuthService or through migration
+            // to avoid issues with password hashing during seeding
+        }
+    }
+}

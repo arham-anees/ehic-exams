@@ -1,0 +1,15 @@
+﻿{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "JWT": {
+    "Secret": "MyVerySecretKeyForJWTTokenSigningPurposesThatIsLongEnough123456",
+    "Issuer": "EhicBackend",
+    "Audience": "EhicUsers",
+    "ExpiryInMinutes": 60
+  }
+}
