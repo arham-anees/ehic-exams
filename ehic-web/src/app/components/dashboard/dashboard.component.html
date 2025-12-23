@@ -1,0 +1,52 @@
+<div class="dashboard-container">
+  <header class="dashboard-header">
+    <div class="header-content">
+      <h1>EHIC Exams Dashboard</h1>
+      <div class="user-info" *ngIf="currentUser">
+        <span>Welcome, {{ currentUser.firstName }} {{ currentUser.lastName }}</span>
+        <span class="role-badge" [ngClass]="currentUser.role.toLowerCase()">{{ currentUser.role }}</span>
+        <button class="logout-btn" (click)="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
+  
+  <main class="dashboard-content">
+    <div class="content-wrapper" *ngIf="currentUser">
+      <div class="welcome-section">
+        <h2>Welcome to EHIC Exams Platform</h2>
+        <p>You are logged in as <strong>{{ currentUser.username }}</strong></p>
+        <p>Role: <strong>{{ currentUser.role }}</strong></p>
+        <p>Email: <strong>{{ currentUser.email }}</strong></p>
+      </div>
+      
+      <div class="features-section">
+        <h3>Available Features</h3>
+        <div class="features-grid">
+          <div class="feature-card" *ngIf="currentUser.role === 'Student'">
+            <h4>Take Exams</h4>
+            <p>Access and take available exams</p>
+            <button class="feature-btn">Start Exam</button>
+          </div>
+          
+          <div class="feature-card" *ngIf="currentUser.role === 'Admin'">
+            <h4>Manage Exams</h4>
+            <p>Create and manage exam questions</p>
+            <button class="feature-btn">Manage Exams</button>
+          </div>
+          
+          <div class="feature-card" *ngIf="currentUser.role === 'Admin'">
+            <h4>User Management</h4>
+            <p>Manage user accounts and roles</p>
+            <button class="feature-btn">Manage Users</button>
+          </div>
+          
+          <div class="feature-card">
+            <h4>View Results</h4>
+            <p>Check your exam results and scores</p>
+            <button class="feature-btn">View Results</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
