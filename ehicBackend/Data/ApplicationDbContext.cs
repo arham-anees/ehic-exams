@@ -1,0 +1,233 @@
+using Microsoft.EntityFrameworkCore;
+using EhicBackend.Entities;
+
+namespace EhicBackend.Data
+{
+    public class ApplicationDbContext : DbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options)
+        {
+        }
+
+        // Existing entities
+        public DbSet<User> Users { get; set; }
+        public DbSet<Role> Roles { get; set; }
+        
+        // New examination entities
+        public DbSet<Question> Questions { get; set; }
+        public DbSet<AnswerChoice> AnswerChoices { get; set; }
+        public DbSet<Exam> Exams { get; set; }
+        public DbSet<ExamQuestion> ExamQuestions { get; set; }
+        public DbSet<ExamAttempt> ExamAttempts { get; set; }
+        public DbSet<ExamResponse> ExamResponses { get; set; }
+        public DbSet<BaptismEligibility> BaptismEligibilities { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            // Configure User entity
+            modelBuilder.Entity<User>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Username).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Email).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.PasswordHash).IsRequired();
+                entity.Property(e => e.FirstName).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.LastName).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Create unique indexes
+                entity.HasIndex(e => e.Username).IsUnique();
+                entity.HasIndex(e => e.Email).IsUnique();
+
+                // Configure relationship with Role
+                entity.HasOne(e => e.Role)
+                      .WithMany()
+                      .HasForeignKey("RoleId")
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Configure Role entity
+            modelBuilder.Entity<Role>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Description).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Create unique index for role name
+                entity.HasIndex(e => e.Name).IsUnique();
+            });
+
+            // Configure Question entity
+            modelBuilder.Entity<Question>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.QuestionText).IsRequired().HasMaxLength(1000);
+                entity.Property(e => e.QuestionType).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Category).HasMaxLength(100);
+                entity.Property(e => e.Difficulty).HasMaxLength(20);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Audit fields
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+            });
+
+            // Configure AnswerChoice entity
+            modelBuilder.Entity<AnswerChoice>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ChoiceText).IsRequired().HasMaxLength(500);
+                entity.Property(e => e.IsCorrect).IsRequired();
+                entity.Property(e => e.DisplayOrder).IsRequired();
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Relationship with Question
+                entity.HasOne(e => e.Question)
+                      .WithMany(q => q.AnswerChoices)
+                      .HasForeignKey(e => e.QuestionId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // Configure Exam entity
+            modelBuilder.Entity<Exam>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.Description).HasMaxLength(1000);
+                entity.Property(e => e.TotalQuestions).IsRequired();
+                entity.Property(e => e.QuestionsPerExam).IsRequired();
+                entity.Property(e => e.TimeLimit).HasDefaultValue(60); // minutes
+                entity.Property(e => e.PassingPercentage).IsRequired().HasDefaultValue(80).HasPrecision(5, 2);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                entity.Property(e => e.IsOpen).HasDefaultValue(false);
+                entity.Property(e => e.MaxAttempts).HasDefaultValue(1);
+                
+                // Audit fields
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+            });
+
+            // Configure ExamQuestion entity (many-to-many between Exam and Question)
+            modelBuilder.Entity<ExamQuestion>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Relationships
+                entity.HasOne(e => e.Exam)
+                      .WithMany(ex => ex.ExamQuestions)
+                      .HasForeignKey(e => e.ExamId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                      
+                entity.HasOne(e => e.Question)
+                      .WithMany()
+                      .HasForeignKey(e => e.QuestionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                // Unique constraint
+                entity.HasIndex(e => new { e.ExamId, e.QuestionId }).IsUnique();
+            });
+
+            // Configure ExamAttempt entity
+            modelBuilder.Entity<ExamAttempt>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Score).HasDefaultValue(0);
+                entity.Property(e => e.Percentage).HasDefaultValue(0).HasPrecision(5, 2);
+                entity.Property(e => e.Passed).HasDefaultValue(false);
+                entity.Property(e => e.IsCompleted).HasDefaultValue(false);
+                entity.Property(e => e.AttemptNumber).IsRequired();
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Audit fields
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+                
+                // Relationships
+                entity.HasOne(e => e.User)
+                      .WithMany()
+                      .HasForeignKey(e => e.UserId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                      
+                entity.HasOne(e => e.Exam)
+                      .WithMany()
+                      .HasForeignKey(e => e.ExamId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                // Index for ranking queries
+                entity.HasIndex(e => new { e.ExamId, e.Percentage }).IsDescending();
+            });
+
+            // Configure ExamResponse entity
+            modelBuilder.Entity<ExamResponse>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.IsCorrect).HasDefaultValue(false);
+                entity.Property(e => e.QuestionOrder).IsRequired();
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Relationships
+                entity.HasOne(e => e.ExamAttempt)
+                      .WithMany(ea => ea.Responses)
+                      .HasForeignKey(e => e.ExamAttemptId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                      
+                entity.HasOne(e => e.Question)
+                      .WithMany()
+                      .HasForeignKey(e => e.QuestionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                      
+                entity.HasOne(e => e.SelectedAnswer)
+                      .WithMany()
+                      .HasForeignKey(e => e.SelectedAnswerId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                // Unique constraint
+                entity.HasIndex(e => new { e.ExamAttemptId, e.QuestionId }).IsUnique();
+            });
+
+            // Configure BaptismEligibility entity
+            modelBuilder.Entity<BaptismEligibility>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.IsEligible).IsRequired();
+                entity.Property(e => e.Notes).HasMaxLength(500);
+                entity.Property(e => e.CertificateIssued).HasDefaultValue(false);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                
+                // Audit fields
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+                
+                // Relationships
+                entity.HasOne(e => e.User)
+                      .WithMany()
+                      .HasForeignKey(e => e.UserId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                      
+                entity.HasOne(e => e.ExamAttempt)
+                      .WithOne()
+                      .HasForeignKey<BaptismEligibility>(e => e.ExamAttemptId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                // Index for quick eligibility queries
+                entity.HasIndex(e => e.IsEligible);
+            });
+
+            // Seed initial data
+            SeedData(modelBuilder);
+        }
+
+        private void SeedData(ModelBuilder modelBuilder)
+        {
+            // Seed roles (updated for examination system)
+            modelBuilder.Entity<Role>().HasData(
+                new Role { Id = 1, Name = "Student", Description = "Standard Student User", IsActive = true },
+                new Role { Id = 2, Name = "Admin", Description = "System Administrator", IsActive = true },
+                new Role { Id = 3, Name = "Instructor", Description = "Exam Creator and Administrator", IsActive = true }
+            );
+
+            // Note: User seeding will be handled in the AuthService or through migration
+            // to avoid issues with password hashing during seeding
+        }
+    }
+}

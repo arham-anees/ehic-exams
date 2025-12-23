@@ -1,0 +1,163 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
+using EhicBackend.Services;
+using EhicBackend.DTOs;
+using EhicBackend.Data;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
+
+namespace EhicBackend.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    [Authorize]
+    public class DashboardController : ControllerBase
+    {
+        private readonly ApplicationDbContext _context;
+        private readonly IBaptismEligibilityService _baptismService;
+        private readonly IExamAttemptService _examAttemptService;
+        private readonly IExamService _examService;
+
+        public DashboardController(
+            ApplicationDbContext context,
+            IBaptismEligibilityService baptismService,
+            IExamAttemptService examAttemptService,
+            IExamService examService)
+        {
+            _context = context;
+            _baptismService = baptismService;
+            _examAttemptService = examAttemptService;
+            _examService = examService;
+        }
+
+        [HttpGet("instructor")]
+        [Authorize(Roles = "Admin,Instructor")]
+        public async Task<ActionResult<InstructorDashboardDto>> GetInstructorDashboard()
+        {
+            var dashboard = new InstructorDashboardDto
+            {
+                TotalQuestions = await _context.Questions.CountAsync(q => q.IsActive),
+                TotalExams = await _context.Exams.CountAsync(e => e.IsActive),
+                ActiveExams = await _context.Exams.CountAsync(e => e.IsActive && e.IsOpen),
+                TotalStudents = await _context.Users
+                    .Include(u => u.Role)
+                    .CountAsync(u => u.IsActive && u.Role.Name == "Student"),
+                TotalAttempts = await _context.ExamAttempts.CountAsync(ea => ea.IsCompleted),
+                EligibleStudents = await _context.BaptismEligibilities.CountAsync(be => be.IsEligible && be.IsActive)
+            };
+
+            // Recent exams summary
+            var recentExams = await _context.Exams
+                .Where(e => e.IsActive)
+                .OrderByDescending(e => e.CreatedAt)
+                .Take(5)
+                .Select(e => new ExamSummaryDto
+                {
+                    Id = e.Id,
+                    Title = e.Title,
+                    IsOpen = e.IsOpen,
+                    CreatedAt = e.CreatedAt,
+                    TotalAttempts = _context.ExamAttempts.Count(ea => ea.ExamId == e.Id && ea.IsCompleted),
+                    PassedCount = _context.ExamAttempts.Count(ea => ea.ExamId == e.Id && ea.IsCompleted && ea.Passed),
+                    FailedCount = _context.ExamAttempts.Count(ea => ea.ExamId == e.Id && ea.IsCompleted && !ea.Passed),
+                    AverageScore = (decimal)(_context.ExamAttempts
+                        .Where(ea => ea.ExamId == e.Id && ea.IsCompleted)
+                        .Average(ea => (double?)ea.Percentage) ?? 0)
+                })
+                .ToListAsync();
+
+            dashboard.RecentExams = recentExams;
+
+            // Top performers across all exams
+            var topPerformers = await _context.ExamAttempts
+                .Include(ea => ea.User)
+                .Where(ea => ea.IsCompleted)
+                .GroupBy(ea => ea.UserId)
+                .Select(g => new RankingDto
+                {
+                    UserId = g.Key,
+                    UserName = $"{g.First().User.FirstName} {g.First().User.LastName}",
+                    Score = g.Sum(ea => ea.Score),
+                    Percentage = g.Average(ea => ea.Percentage),
+                    Passed = g.Any(ea => ea.Passed),
+                    CompletedAt = g.Max(ea => ea.CompletedAt) ?? DateTime.MinValue
+                })
+                .OrderByDescending(r => r.Percentage)
+                .Take(10)
+                .ToListAsync();
+
+            // Add ranks
+            for (int i = 0; i < topPerformers.Count; i++)
+            {
+                topPerformers[i].Rank = i + 1;
+            }
+
+            dashboard.TopPerformers = topPerformers;
+
+            return Ok(dashboard);
+        }
+
+        [HttpGet("student")]
+        [Authorize(Roles = "Student")]
+        public async Task<ActionResult<StudentDashboardDto>> GetStudentDashboard()
+        {
+            var userId = GetCurrentUserId();
+            var user = await _context.Users.Include(u => u.Role).FirstOrDefaultAsync(u => u.Id == userId);
+            
+            if (user == null)
+            {
+                return NotFound();
+            }
+
+            var dashboard = new StudentDashboardDto
+            {
+                WelcomeMessage = $"Welcome back, {user.FirstName}!"
+            };
+
+            // Available exams
+            dashboard.AvailableExams = (await _examService.GetActiveExamsForStudentAsync()).ToList();
+
+            // Recent attempts
+            dashboard.RecentAttempts = (await _examAttemptService.GetUserExamAttemptsAsync(userId))
+                .Take(5)
+                .ToList();
+
+            // Baptism eligibility
+            dashboard.BaptismEligibility = await _baptismService.GetUserEligibilityAsync(userId);
+
+            // Student stats
+            var allAttempts = await _context.ExamAttempts
+                .Where(ea => ea.UserId == userId && ea.IsCompleted)
+                .ToListAsync();
+
+            dashboard.Stats = new StudentStatsDto
+            {
+                ExamsTaken = allAttempts.Count,
+                ExamsPassed = allAttempts.Count(ea => ea.Passed),
+                AverageScore = allAttempts.Any() ? allAttempts.Average(ea => ea.Percentage) : 0,
+                IsEligibleForBaptism = dashboard.BaptismEligibility?.IsEligible ?? false
+            };
+
+            // Calculate current rank (simplified - could be more sophisticated)
+            var allStudentAverages = await _context.ExamAttempts
+                .Include(ea => ea.User)
+                .ThenInclude(u => u.Role)
+                .Where(ea => ea.IsCompleted && ea.User.Role.Name == "Student")
+                .GroupBy(ea => ea.UserId)
+                .Select(g => new { UserId = g.Key, Average = g.Average(ea => ea.Percentage) })
+                .OrderByDescending(x => x.Average)
+                .ToListAsync();
+
+            var userRank = allStudentAverages.FindIndex(x => x.UserId == userId) + 1;
+            dashboard.Stats.CurrentRank = userRank > 0 ? userRank : allStudentAverages.Count + 1;
+
+            return Ok(dashboard);
+        }
+
+        private int GetCurrentUserId()
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return int.Parse(userIdClaim ?? "0");
+        }
+    }
+}

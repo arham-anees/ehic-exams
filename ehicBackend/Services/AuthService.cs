@@ -1,13 +1,191 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.EntityFrameworkCore;
+using EhicBackend.Entities;
+using EhicBackend.DTOs;
+using EhicBackend.Data;
+
 namespace EhicBackend.Services
 {
     public interface IAuthService
     {
-        // Define authentication-related methods here
+        Task<AuthResponse?> LoginAsync(LoginRequest loginRequest);
+        Task<AuthResponse?> RegisterAsync(RegisterRequest registerRequest);
+        Task<User?> GetUserByEmailAsync(string email);
+        Task<User?> GetUserByUsernameAsync(string username);
+        Task EnsureDefaultAdminExists();
     }
-
 
     public class AuthService : IAuthService
     {
-        // Implement authentication-related methods here
+        private readonly IConfiguration _configuration;
+        private readonly ApplicationDbContext _context;
+
+        public AuthService(IConfiguration configuration, ApplicationDbContext context)
+        {
+            _configuration = configuration;
+            _context = context;
+        }
+
+        public async Task<AuthResponse?> LoginAsync(LoginRequest loginRequest)
+        {
+            var user = await GetUserByEmailAsync(loginRequest.Email);
+            
+            if (user == null || !user.IsActive)
+            {
+                return null;
+            }
+
+            if (!PasswordHasher.VerifyPassword(loginRequest.Password, user.PasswordHash))
+            {
+                return null;
+            }
+
+            var token = GenerateJwtToken(user);
+            var expiresAt = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes());
+
+            return new AuthResponse
+            {
+                Token = token,
+                Expires = expiresAt,
+                User = new UserDto
+                {
+                    Username = user.Username,
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    RoleId = user.RoleId,
+                    Role = user.Role.Name
+                }
+            };
+        }
+
+        public async Task<AuthResponse?> RegisterAsync(RegisterRequest registerRequest)
+        {
+            // Check if user already exists
+            if (await GetUserByEmailAsync(registerRequest.Email) != null)
+            {
+                return null; // User already exists
+            }
+
+            if (await GetUserByUsernameAsync(registerRequest.Username) != null)
+            {
+                return null; // Username already exists
+            }
+
+            var role = await _context.Roles.FirstOrDefaultAsync(r => r.Id == registerRequest.RoleId && r.IsActive);
+            if (role == null)
+            {
+                role = await _context.Roles.FirstAsync(r => r.Name == "User" && r.IsActive);
+            }
+            
+            var user = new User
+            {
+                Username = registerRequest.Username,
+                Email = registerRequest.Email,
+                PasswordHash = PasswordHasher.HashPassword(registerRequest.Password),
+                FirstName = registerRequest.FirstName,
+                LastName = registerRequest.LastName,
+                RoleId = role.Id,
+                IsActive = true
+            };
+
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
+
+            // Reload user with role for token generation
+            user = await _context.Users.Include(u => u.Role).FirstAsync(u => u.Id == user.Id);
+
+            var token = GenerateJwtToken(user);
+            var expiresAt = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes());
+
+            return new AuthResponse
+            {
+                Token = token,
+                Expires = expiresAt,
+                User = new UserDto
+                {
+                    Username = user.Username,
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    RoleId = user.RoleId,
+                    Role = user.Role.Name
+                }
+            };
+        }
+
+        public async Task<User?> GetUserByEmailAsync(string email)
+        {
+            return await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.Email.ToLower() == email.ToLower() && u.IsActive);
+        }
+
+        public async Task<User?> GetUserByUsernameAsync(string username)
+        {
+            return await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower() && u.IsActive);
+        }
+
+        public async Task EnsureDefaultAdminExists()
+        {
+            // Check if any admin user exists
+            var adminRole = await _context.Roles.FirstOrDefaultAsync(r => r.Name == "Admin" && r.IsActive);
+            if (adminRole == null) return;
+
+            var adminExists = await _context.Users.AnyAsync(u => u.RoleId == adminRole.Id && u.IsActive);
+            if (!adminExists)
+            {
+                var defaultAdmin = new User
+                {
+                    Username = "admin",
+                    Email = "admin@ehic.com",
+                    PasswordHash = PasswordHasher.HashPassword("admin123"),
+                    FirstName = "Admin",
+                    LastName = "User",
+                    RoleId = adminRole.Id,
+                    IsActive = true
+                };
+
+                _context.Users.Add(defaultAdmin);
+                await _context.SaveChangesAsync();
+            }
+        }
+
+        private string GenerateJwtToken(User user)
+        {
+            var secret = _configuration["JWT:Secret"] ?? throw new InvalidOperationException("JWT Secret not configured");
+            var key = Encoding.ASCII.GetBytes(secret);
+            
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(new[]
+                {
+                    new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                    new Claim(ClaimTypes.Name, user.Username),
+                    new Claim(ClaimTypes.Email, user.Email),
+                    new Claim(ClaimTypes.Role, user.Role.Name),
+                    new Claim("FirstName", user.FirstName),
+                    new Claim("LastName", user.LastName)
+                }),
+                Expires = DateTime.UtcNow.AddMinutes(GetJwtExpiryMinutes()),
+                Issuer = _configuration["JWT:Issuer"],
+                Audience = _configuration["JWT:Audience"],
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            };
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
+        }
+
+        private int GetJwtExpiryMinutes()
+        {
+            return int.TryParse(_configuration["JWT:ExpiryInMinutes"], out int minutes) ? minutes : 60;
+        }
     }
 }

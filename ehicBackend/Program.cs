@@ -1,4 +1,10 @@
 using EhicBackend.Services;
+using EhicBackend.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,8 +16,9 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.WriteIndented = true;
     });
 
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// Configure Entity Framework
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // Add CORS
 builder.Services.AddCors(options =>
@@ -25,25 +32,111 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Add authentication and authorization
-builder.Services.AddAuthentication();
+// Configure JWT Authentication
+var jwtSettings = builder.Configuration.GetSection("JWT");
+var secret = jwtSettings["Secret"] ?? throw new InvalidOperationException("JWT Secret not configured");
+var key = Encoding.ASCII.GetBytes(secret);
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.RequireHttpsMetadata = false; // For development only
+    options.SaveToken = true;
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(key),
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidIssuer = jwtSettings["Issuer"],
+        ValidAudience = jwtSettings["Audience"],
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.Zero
+    };
+});
+
 builder.Services.AddAuthorization();
 
-// Add API Explorer for Swagger
+// Configure Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo 
+    { 
+        Title = "EHIC Examination API", 
+        Version = "v1",
+        Description = "API for EHIC Online Examination & Baptism Eligibility Platform"
+    });
+    
+    // Add JWT authentication to Swagger
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
+    });
+    
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 #region Dependency Injection
 
+// Authentication service
 builder.Services.AddScoped<IAuthService, AuthService>();
+
+// Examination services
+builder.Services.AddScoped<IQuestionService, QuestionService>();
+builder.Services.AddScoped<IExamService, ExamService>();
+builder.Services.AddScoped<IExamAttemptService, ExamAttemptService>();
+builder.Services.AddScoped<IBaptismEligibilityService, BaptismEligibilityService>();
 
 #endregion
 
 var app = builder.Build();
 
+// Ensure database is created and seeded
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    var authService = scope.ServiceProvider.GetRequiredService<IAuthService>();
+    
+    // Ensure database exists
+    context.Database.EnsureCreated();
+    
+    // Create default admin user if it doesn't exist
+    await authService.EnsureDefaultAdminExists();
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "EHIC Examination API V1");
+        c.RoutePrefix = "swagger";
+        c.DocumentTitle = "EHIC Examination API";
+        c.DefaultModelsExpandDepth(-1); // Hide models section by default
+    });
     app.UseDeveloperExceptionPage();
 }
 else
@@ -63,6 +156,15 @@ app.UseAuthorization();
 
 // Map controllers
 app.MapControllers();
+
+// Add a welcome endpoint
+app.MapGet("/", () => new
+{
+    message = "Welcome to EHIC Examination & Baptism Eligibility Platform API",
+    version = "1.0.0",
+    documentation = "/swagger",
+    timestamp = DateTime.UtcNow
+});
 
 app.Run();
 
